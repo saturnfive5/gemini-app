@@ -1,0 +1,374 @@
+<!DOCTYPE html>
+<html lang="nl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Gladde ijzelweg simulator</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        body { margin: 0; overflow: hidden; font-family: 'Segoe UI', sans-serif; touch-action: none; background: #e0f7fa; }
+        
+        #ui-layer {
+            position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+            pointer-events: none; display: flex; flex-direction: column;
+            align-items: center; padding: 20px;
+            color: #333; z-index: 5;
+        }
+
+        .overlay-card {
+            background: rgba(255, 255, 255, 0.9); padding: 25px; border-radius: 20px;
+            pointer-events: auto; text-align: center; backdrop-filter: blur(10px);
+            border: 2px solid #0077be; max-width: 90%; color: #333;
+        }
+
+        #balance-container { width: 250px; margin-top: 15px; }
+        #balance-bar {
+            height: 12px; background: rgba(0,0,0,0.1);
+            border-radius: 6px; position: relative; overflow: hidden; border: 1px solid #999;
+        }
+        #balance-indicator {
+            width: 14px; height: 100%; background: #2ed573;
+            position: absolute; left: 50%; transform: translateX(-50%);
+            transition: left 0.1s ease-out;
+        }
+
+        .btn {
+            background: #0077be;
+            color: white; border: none; padding: 12px 30px;
+            font-size: 1.1rem; border-radius: 50px; cursor: pointer;
+            margin: 10px; font-weight: bold; pointer-events: auto;
+        }
+
+        /* FORCEER ZICHTBAARHEID VAN KNOPPEN */
+        #mobile-controls { 
+            position: fixed;
+            bottom: 30px;
+            left: 0;
+            width: 100%;
+            display: flex; 
+            justify-content: space-evenly; 
+            align-items: center;
+            pointer-events: none; /* Container laat clicks door... */
+            z-index: 9999; /* ...behalve de knoppen zelf */
+        }
+
+        .control-btn {
+            width: 80px;
+            height: 80px;
+            background: rgba(0, 119, 190, 0.85);
+            color: white;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 32px;
+            font-weight: bold;
+            user-select: none;
+            -webkit-user-select: none;
+            touch-action: none;
+            pointer-events: auto; /* Knoppen vangen clicks op */
+            border: 3px solid white;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.3);
+        }
+
+        .control-btn:active {
+            background: rgba(46, 213, 115, 0.9);
+            transform: scale(0.9);
+        }
+    </style>
+</head>
+<body>
+
+<div id="ui-layer">
+    <div class="flex flex-col items-center pointer-events-none">
+        <div id="level-indicator" class="text-xl font-bold uppercase tracking-widest text-blue-900">Level 1: Gladde Stoep</div>
+        <div id="distance-display" class="text-lg font-semibold">0m / 40m</div>
+        <div id="balance-container">
+            <div id="balance-bar"><div id="balance-indicator"></div></div>
+            <div id="center-warning" class="text-xs text-orange-600 font-bold opacity-0 transition-opacity">PAS OP: Je bevriest!</div>
+        </div>
+    </div>
+
+    <!-- Start Scherm -->
+    <div id="start-screen" class="overlay-card mt-10">
+        <h1 class="text-3xl font-bold mb-4">Gladde ijzelweg simulator</h1>
+        <p class="mb-4 text-gray-700">Gebruik de pijlen onderaan of je toetsenbord (WASD).</p>
+        <div class="flex flex-wrap justify-center">
+            <button class="btn" onclick="startLevel(1)">Level 1</button>
+            <button class="btn opacity-50" id="btn-l2" disabled onclick="startLevel(2)">Level 2</button>
+            <button class="btn opacity-50" id="btn-l3" disabled onclick="startLevel(3)">Level 3</button>
+        </div>
+    </div>
+
+    <!-- Game Over -->
+    <div id="game-over-screen" class="overlay-card mt-10" style="display: none;">
+        <h2 class="text-4xl font-bold text-red-600 mb-2">UITGEGLEDEN!</h2>
+        <p id="death-reason" class="mb-4 text-lg text-gray-800"></p>
+        <button class="btn" onclick="resetGame()">Nog een keer</button>
+        <button class="btn bg-gray-400" onclick="showStart()">Menu</button>
+    </div>
+
+    <!-- Win Scherm -->
+    <div id="win-screen" class="overlay-card mt-10" style="display: none;">
+        <h2 class="text-4xl font-bold text-green-600 mb-2">VEILIG!</h2>
+        <p class="mb-4 text-lg">Je hebt de overkant gehaald!</p>
+        <button id="next-lvl-btn" class="btn" onclick="nextLevel()">Volgend Level</button>
+        <button class="btn bg-gray-400" onclick="showStart()">Menu</button>
+    </div>
+</div>
+
+<!-- Knoppen buiten de UI-layer container voor maximale compatibiliteit -->
+<div id="mobile-controls">
+    <div class="control-btn" id="left-btn">←</div>
+    <div class="control-btn" style="background: rgba(46, 213, 115, 0.85);" id="up-btn">↑</div>
+    <div class="control-btn" id="right-btn">→</div>
+</div>
+
+<script>
+    let scene, camera, renderer, player, trackGroup;
+    let balance = 0, distance = 0, currentLevel = 1;
+    let isGameOver = false, isStarted = false;
+    let centerTime = 0, unlockedLevels = 1, roadCurve = []; 
+
+    const levelData = {
+        1: { name: "Gladde Stoep", dist: 40, width: 2.2, wobble: 0.007, speed: 0.12, curves: [] },
+        2: { name: "Ijsbaan Straat", dist: 60, width: 1.5, wobble: 0.013, speed: 0.14, curves: [{z: 30, x: 5}] },
+        3: { name: "Gevaarlijke Kruising", dist: 100, width: 1.0, wobble: 0.02, speed: 0.16, curves: [
+            {z: 20, x: -4}, {z: 45, x: 4}, {z: 70, x: -6}, {z: 90, x: 2}
+        ]}
+    };
+
+    const keys = { left: false, right: false, up: false };
+
+    function init() {
+        scene = new THREE.Scene();
+        scene.background = new THREE.Color(0xb2ebf2);
+        scene.fog = new THREE.Fog(0xb2ebf2, 20, 120);
+
+        camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+        renderer = new THREE.WebGLRenderer({ antialias: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.shadowMap.enabled = true;
+        document.body.appendChild(renderer.domElement);
+
+        scene.add(new THREE.AmbientLight(0xffffff, 0.8));
+        const sun = new THREE.DirectionalLight(0xffffff, 0.8);
+        sun.position.set(50, 50, 20);
+        scene.add(sun);
+
+        createHumanPlayer();
+        createWinterEnvironment();
+        setupControls();
+        
+        window.addEventListener('resize', onWindowResize);
+        animate();
+    }
+
+    function createHumanPlayer() {
+        player = new THREE.Group();
+        const mat = (color) => new THREE.MeshPhongMaterial({ color });
+        
+        const legs = new THREE.Mesh(new THREE.BoxGeometry(0.3, 0.6, 0.2), mat(0x1a237e));
+        legs.position.y = 0.3;
+        player.add(legs);
+
+        const torso = new THREE.Mesh(new THREE.BoxGeometry(0.4, 0.5, 0.25), mat(0x0288d1));
+        torso.position.y = 0.85;
+        player.add(torso);
+
+        const head = new THREE.Mesh(new THREE.BoxGeometry(0.25, 0.25, 0.25), mat(0xffdbac));
+        head.position.y = 1.25;
+        player.add(head);
+
+        const armL = new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.4, 0.1), mat(0x0288d1));
+        armL.position.set(-0.25, 0.9, 0);
+        player.add(armL);
+
+        const armR = new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.4, 0.1), mat(0x0288d1));
+        armR.position.set(0.25, 0.9, 0);
+        player.add(armR);
+
+        scene.add(player);
+    }
+
+    function createWinterEnvironment() {
+        const snow = new THREE.Mesh(new THREE.PlaneGeometry(300, 600), new THREE.MeshPhongMaterial({ color: 0xffffff }));
+        snow.rotation.x = -Math.PI / 2;
+        snow.position.y = -0.05;
+        scene.add(snow);
+
+        for(let z = 20; z > -300; z -= 18) {
+            for(let x of [-15, 15]) {
+                const h = 7 + Math.random() * 5;
+                const house = new THREE.Mesh(new THREE.BoxGeometry(8, h, 8), new THREE.MeshPhongMaterial({ color: 0xeeeeee }));
+                house.position.set(x, h/2, z);
+                scene.add(house);
+                const roof = new THREE.Mesh(new THREE.BoxGeometry(8.5, 0.5, 8.5), new THREE.MeshPhongMaterial({ color: 0xffffff }));
+                roof.position.set(x, h + 0.2, z);
+                scene.add(roof);
+            }
+        }
+    }
+
+    function getRoadX(zPos) {
+        let x = 0;
+        const currentZ = -zPos; 
+        for (let i = 0; i < roadCurve.length; i++) {
+            const p = roadCurve[i];
+            const prevZ = i === 0 ? 0 : roadCurve[i-1].z;
+            const prevX = i === 0 ? 0 : roadCurve[i-1].x;
+            if (currentZ >= prevZ && currentZ <= p.z) {
+                return prevX + (p.x - prevX) * ((currentZ - prevZ) / (p.z - prevZ));
+            }
+            if (i === roadCurve.length - 1 && currentZ > p.z) return p.x;
+        }
+        return 0;
+    }
+
+    function buildLevelRoad(lvl) {
+        if(trackGroup) scene.remove(trackGroup);
+        trackGroup = new THREE.Group();
+        const data = levelData[lvl];
+        roadCurve = data.curves;
+        const segments = 100, step = (data.dist + 20) / segments;
+        
+        for (let i = 0; i < segments; i++) {
+            const z1 = i * step, z2 = (i + 1) * step;
+            const x1 = getRoadX(-z1), x2 = getRoadX(-z2);
+            const seg = new THREE.Mesh(new THREE.BoxGeometry(data.width + 1.2, 0.1, step + 0.1), new THREE.MeshPhongMaterial({ color: 0xaaccff, transparent: true, opacity: 0.8 }));
+            seg.position.set((x1 + x2) / 2, 0, -(z1 + z2) / 2 + 5);
+            seg.lookAt(new THREE.Vector3(x2, 0, -z2 + 5));
+            trackGroup.add(seg);
+            const line = new THREE.Mesh(new THREE.PlaneGeometry(0.1, step + 0.1), new THREE.MeshBasicMaterial({ color: 0xffffff }));
+            line.rotation.x = -Math.PI / 2;
+            line.position.set((x1 + x2) / 2, 0.06, -(z1 + z2) / 2 + 5);
+            line.lookAt(new THREE.Vector3(x2, 0.06, -z2 + 5));
+            trackGroup.add(line);
+        }
+        scene.add(trackGroup);
+    }
+
+    function startLevel(lvl) {
+        currentLevel = lvl;
+        document.getElementById('level-indicator').innerText = `Level ${lvl}: ${levelData[lvl].name}`;
+        document.getElementById('start-screen').style.display = 'none';
+        buildLevelRoad(lvl);
+        resetGame();
+    }
+
+    function nextLevel() {
+        if(currentLevel < 3) startLevel(currentLevel + 1);
+        else showStart();
+    }
+
+    function showStart() {
+        document.getElementById('start-screen').style.display = 'block';
+        document.getElementById('win-screen').style.display = 'none';
+        document.getElementById('game-over-screen').style.display = 'none';
+        isStarted = false;
+        for(let i=2; i<=3; i++) {
+            const btn = document.getElementById(`btn-l${i}`);
+            if(unlockedLevels >= i) { btn.disabled = false; btn.classList.remove('opacity-50'); }
+        }
+    }
+
+    function resetGame() {
+        balance = 0; distance = 0; centerTime = 0; isGameOver = false; isStarted = true;
+        player.position.set(0, 0, 0); player.rotation.set(0, 0, 0);
+        document.getElementById('game-over-screen').style.display = 'none';
+        document.getElementById('win-screen').style.display = 'none';
+    }
+
+    function animate() {
+        requestAnimationFrame(animate);
+        if (isStarted && !isGameOver) {
+            const data = levelData[currentLevel];
+            if (Math.abs(balance) < 0.1 && keys.up) centerTime += 0.016;
+            else centerTime = Math.max(0, centerTime - 0.04);
+
+            const penalty = Math.min(centerTime * 0.15, 0.08);
+            document.getElementById('center-warning').style.opacity = centerTime > 1.0 ? '1' : '0';
+            document.getElementById('balance-indicator').style.background = centerTime > 1.0 ? '#d35400' : '#2ed573';
+
+            balance += (Math.random() - 0.5) * (data.wobble + penalty) + (balance * (0.015 + penalty));
+            if (keys.left) balance -= 0.028;
+            if (keys.right) balance += 0.028;
+            if (keys.up) {
+                distance += data.speed;
+                player.position.z -= data.speed;
+                player.position.y = Math.abs(Math.sin(distance * 3)) * 0.04;
+            }
+
+            const tX = getRoadX(player.position.z);
+            player.rotation.z = balance * 0.8;
+            player.position.x = tX + (balance * (data.width * 0.5));
+
+            document.getElementById('balance-indicator').style.left = `${50 + (balance * 50)}%`;
+            document.getElementById('distance-display').innerText = `Afstand: ${Math.floor(distance)}m / ${data.dist}m`;
+
+            if (Math.abs(balance) > 1.1) endGame(false);
+            if (distance >= data.dist) endGame(true);
+
+            camera.position.set(player.position.x * 0.6 + (tX * 0.4), 2.8, player.position.z + 5);
+            camera.lookAt(tX, 0.8, player.position.z - 3);
+        }
+
+        if (isGameOver && Math.abs(player.rotation.z) < 1.6) {
+            player.rotation.z += (balance > 0 ? 0.18 : -0.18);
+            if(player.position.y > 0.05) player.position.y -= 0.06;
+        }
+        renderer.render(scene, camera);
+    }
+
+    function endGame(won) {
+        isGameOver = true;
+        if (won) {
+            if(currentLevel === unlockedLevels) unlockedLevels++;
+            document.getElementById('win-screen').style.display = 'block';
+        } else {
+            document.getElementById('game-over-screen').style.display = 'block';
+            document.getElementById('death-reason').innerText = centerTime > 1.5 ? "Bevroren in het midden!" : "Je verloor je grip!";
+        }
+    }
+
+    function setupControls() {
+        // Keyboard
+        window.onkeydown = e => {
+            if (['ArrowLeft', 'a'].includes(e.key)) keys.left = true;
+            if (['ArrowRight', 'd'].includes(e.key)) keys.right = true;
+            if (['ArrowUp', 'w'].includes(e.key)) keys.up = true;
+        };
+        window.onkeyup = e => {
+            if (['ArrowLeft', 'a'].includes(e.key)) keys.left = false;
+            if (['ArrowRight', 'd'].includes(e.key)) keys.right = false;
+            if (['ArrowUp', 'w'].includes(e.key)) keys.up = false;
+        };
+
+        // Touch & Mouse
+        const setupBtn = (id, key) => {
+            const el = document.getElementById(id);
+            const start = (e) => { e.preventDefault(); keys[key] = true; };
+            const end = (e) => { e.preventDefault(); keys[key] = false; };
+            
+            el.addEventListener('touchstart', start, {passive: false});
+            el.addEventListener('touchend', end, {passive: false});
+            el.addEventListener('mousedown', start);
+            el.addEventListener('mouseup', end);
+            el.addEventListener('mouseleave', end);
+        };
+        setupBtn('left-btn', 'left');
+        setupBtn('right-btn', 'right');
+        setupBtn('up-btn', 'up');
+    }
+
+    function onWindowResize() {
+        camera.aspect = window.innerWidth / window.innerHeight;
+        camera.updateProjectionMatrix();
+        renderer.setSize(window.innerWidth, window.innerHeight);
+    }
+
+    init();
+</script>
+</body>
+</html>
